@@ -1378,6 +1378,22 @@ class DirectGuiDesigner(DirectObject):
             self.tt,
             self.new)
 
+    def load_file(self, filename):
+        """Directly load the passed .gui file."""
+        self.selectElement(self.visualEditorInfo)
+
+        allWidgetDefinitions = {
+            **WidgetDefinition.DEFINITIONS,
+            **self.customWidgetsHandler.getCustomWidgetDefinitions()}
+        ProjectLoader(
+            filename,
+            self.visualEditorInfo,
+            self.elementHandler,
+            self.customWidgetsHandler,
+            self.mainView.getEditorPlacer,
+            allWidgetDefinitions,
+            directLoading=True)
+
     def updateElementDict(self, newDict):
         self.elementDict.update(newDict)
         base.messenger.send("refreshStructureTree")

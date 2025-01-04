@@ -17,7 +17,6 @@ from DirectGuiDesigner.core.WidgetDefinition import PropertyEditTypes
 class JSONTools:
     functionMapping = {
         "base":{"initialText":"get"},
-        #"text":{"align":"align", "scale":"scale", "pos":"pos", "fg":"fg", "bg":"bg", "wordwrap":"wordwrap"}
         }
 
     subOptionMapping = {
@@ -72,14 +71,14 @@ class JSONTools:
         roots = [None] + getAllEditorPlacers()
 
         for root in roots:
-            self.writeSortedContent(root, jsonElements)
+            self.__writeSortedContent(root, jsonElements)
             for name, elementInfo in self.guiElementsDict.items():
                 if elementInfo.parent not in self.writtenRoots:
-                    self.writeSortedContent(elementInfo.parent, jsonElements)
+                    self.__writeSortedContent(elementInfo.parent, jsonElements)
 
         return jsonElements
 
-    def writeSortedContent(self, root, jsonElements):
+    def __writeSortedContent(self, root, jsonElements):
         """To have everything in the right order, we're going to go through all
         elements here and add them from top to bottom, first the parents, then
         respectively their children."""
@@ -91,7 +90,7 @@ class JSONTools:
                 except Exception as e:
                     logging.exception("error while writing {}:".format(elementInfo.name))
                     base.messenger.send("showWarning", ["error while writing {}:".format(elementInfo.name)])
-                self.writeSortedContent(elementInfo, jsonElements)
+                self.__writeSortedContent(elementInfo, jsonElements)
 
     def __createJSONEntry(self, elementInfo):
         from DirectGuiDesigner.DirectGuiDesigner import DirectGuiDesigner
@@ -149,12 +148,12 @@ class JSONTools:
         for subcomponentName in element.components():
             self.__getAllSubcomponents(subcomponentName, element.component(subcomponentName), "")
 
-        hasError = False
+        self.hasError = False
 
         for element, name in self.componentsList.items():
-            if elementInfo.type in self.ignoreMapping:
-                if name in self.ignoreMapping[elementInfo.type]:
-                    continue
+            if elementInfo.type in self.ignoreMapping \
+            and name in self.ignoreMapping[elementInfo.type]:
+                continue
             if name in self.ignoreRepr:
                 reprFunc = lambda x: x
             else:
@@ -162,31 +161,25 @@ class JSONTools:
             if name != "":
                 name += "_"
 
-            for key in self.functionMapping.keys():
-                if key in name:
-                    for option, value in self.functionMapping[key].items():
-                        if name + option not in elementInfo.valueHasChanged \
-                        or not elementInfo.valueHasChanged[name + option]:
-                            # skip unchanged values
-                            continue
+            for functionMapKey in self.functionMapping.keys():
+                if functionMapKey not in name:
+                    continue
+                self.__fillFunctionMappings(
+                    name,
+                    reprFunc,
+                    functionMapKey,
+                    elementInfo,
+                    elementJson)
 
-                        if callable(getattr(element, value)):
-                            optionValue = reprFunc(getattr(element, value)())
-                        else:
-                            optionValue = reprFunc(getattr(element, value))
-
-                        if option in self.specialPropMapping.keys():
-                            optionValue = self.specialPropMapping[option][optionValue]
-                        elementJson[name + option] = optionValue
-            for key in self.subOptionMapping.keys():
-                if key in name:
-                    for option, value in self.subOptionMapping[key].items():
-                        if name + option not in elementInfo.valueHasChanged \
-                        or not elementInfo.valueHasChanged[name + option]:
-                            # skip unchanged values
-                            continue
-                        optionValue = reprFunc(element[value])
-                        elementJson[name + option] = optionValue
+            for subOptionKey in self.subOptionMapping.keys():
+                if subOptionKey not in name:
+                    continue
+                self.__fillSubOptionMappings(
+                    name,
+                    reprFunc,
+                    subOptionKey,
+                    elementInfo,
+                    elementJson)
 
             if type(element).__name__ in self.allWidgetDefinitions:
                 wdList = self.allWidgetDefinitions[type(element).__name__]
@@ -202,124 +195,24 @@ class JSONTools:
                         elementInfo.extraOptions,
                         elementInfo.createAfter,
                         elementInfo.customImportPath)
-                    #subElementInfo.element = element
 
-                    value = PropertyHelper.getValues(wd, subElementInfo)
-                    if hasattr(element, "options"):
-                        for option in element.options():
-                            if option[DGG._OPT_DEFAULT] == wd.internalName \
-                            and option[DGG._OPT_VALUE] == value:
-                                hasChanged = False
-                                break
+                    sub_element_value = PropertyHelper.getValues(wd, subElementInfo)
 
-                            n = name + option[DGG._OPT_DEFAULT]
-                            notInValueHasChanged = (
-                                n not in elementInfo.valueHasChanged \
-                                or not elementInfo.valueHasChanged[n])
-
-                            hasChanged = True
-                            if option[DGG._OPT_DEFAULT] == wd.internalName \
-                            and notInValueHasChanged:
-                                hasChanged = False
-                                break
-                    else:
-                        newWidget = type(element)()
-                        needCheck = True
-                        n = name + wd.internalName
-                        skipCheck = False
-                        if n in elementInfo.valueHasChanged \
-                        and elementInfo.valueHasChanged[n]:
-                            hasChanged = True
-                            skipCheck = True
-
-                        if not skipCheck:
-                            if wd.getFunctionName is not None:
-                                if type(wd.getFunctionName) == str:
-                                    try:
-                                        origWidgetValue = getattr(
-                                            newWidget,
-                                            wd.getFunctionName)()
-                                    except Exception:
-                                        # this may happen if something hasn't
-                                        # been set in the vanilla widget. E.g.
-                                        # the geom of an OnscreenGeom. So there
-                                        # must have been changes in the widget
-                                        needCheck = False
-                                else:
-                                    origWidgetValue = wd.getFunctionName()
-                            else:
-                                origWidgetValue = getattr(
-                                    newWidget,
-                                    wd.internalName)
-
-                            if needCheck and value == origWidgetValue:
-                                hasChanged = False
-
-                    if hasChanged:
-                        if isinstance(value, str) and wd.loaderFunc == "eval(value)":
-                            new_value = value
+                    if self.__hasWidgetValueChanged(element, elementInfo, wd, name, sub_element_value):
+                        if isinstance(sub_element_value, str) \
+                        and wd.loaderFunc == "eval(value)":
+                            new_value = sub_element_value
                         else:
-                            new_value = reprFunc(value)
+                            new_value = reprFunc(sub_element_value)
                         elementJson[name + wd.internalName] = new_value
 
-            if not hasattr(element, "options"): continue
-
-            for option in element.options():
-                if option[DGG._OPT_DEFAULT] in self.ignoreOptions: continue
-                if name + option[DGG._OPT_DEFAULT] not in elementInfo.valueHasChanged \
-                or not elementInfo.valueHasChanged[name + option[DGG._OPT_DEFAULT]]:
-                    # skip unchanged values
-                    continue
-
-                containsIgnore = False
-                for ignoreOption in self.ignoreOptionsWithSub:
-                    if option[DGG._OPT_DEFAULT] in self.keepExactIgnoreOptionsWithSub:
-                        continue
-                    if option[DGG._OPT_DEFAULT].startswith(ignoreOption):
-                        containsIgnore
-                        break
-                if containsIgnore: continue
-
-                if elementInfo.type in self.ignoreMapping:
-                    if name + option[DGG._OPT_DEFAULT] in self.ignoreMapping[elementInfo.type]:
-                        continue
-
-                value = None
-
-                funcName = "get{}{}".format(option[DGG._OPT_DEFAULT][0].upper(), option[DGG._OPT_DEFAULT][1:])
-                propName = "{}".format(option[DGG._OPT_DEFAULT])
-                if hasattr(element, funcName) and not option[DGG._OPT_DEFAULT] in self.ignoreFunction:
-                    if funcName == "getColor":
-                        # Savety check. I currently only know of this function that isn't set by default
-                        if not element.hasColor(): continue
-                    value = getattr(element, funcName)()
-                elif hasattr(element, propName):
-                    if callable(getattr(element, propName)):
-                        value = getattr(element, propName)()
-                    else:
-                        value = getattr(element, propName)
-                elif option[DGG._OPT_DEFAULT] in self.functionMapping["base"]:
-                    funcName = self.functionMapping["base"][option[DGG._OPT_DEFAULT]]
-                    if hasattr(element, funcName):
-                        value = getattr(element, funcName)()
-                    else:
-                        hasError = True
-                        logging.warning("Can't call: {}".format(option[DGG._OPT_DEFAULT]))
-                else:
-                    try:
-                        value = element[option[DGG._OPT_DEFAULT]]
-                    except Exception as e:
-                        hasError = True
-                        logging.warning("Can't write: {}".format(option[DGG._OPT_DEFAULT]))
-
-                if (option[DGG._OPT_VALUE] != element[option[DGG._OPT_DEFAULT]] \
-                or option[DGG._OPT_DEFAULT] in self.explIncludeOptions) \
-                and not hasError:
-                    if option[DGG._OPT_DEFAULT] in self.specialPropMapping:
-                        value = self.specialPropMapping[option[DGG._OPT_DEFAULT]][reprFunc(value)]
-
-                    if not (isinstance(value, type) and reprFunc(value).startswith("<class")):
-                        elementJson[name + option[DGG._OPT_DEFAULT]] = reprFunc(value)
+            if hasattr(element, "options"):
+                self.__writeOptions(
+                    elementInfo,
+                    element,
+                    name,
+                    reprFunc,
+                    elementJson)
 
             # special options for specific elements
             if elementInfo.type == "DirectRadioButton":
@@ -335,6 +228,154 @@ class JSONTools:
         # transparency attribute
         elementJson["transparency"] = reprFunc(elementInfo.element.getTransparency())
 
-        if hasError:
+        if self.hasError:
             base.messenger.send("showWarning", ["Saved Project with errors! See log for more information"])
         return elementJson
+
+    def __fillFunctionMappings(self, name, reprFunc, functionMapKey, elementInfo, elementJson):
+        for option, value in self.functionMapping[functionMapKey].items():
+            if name + option not in elementInfo.valueHasChanged \
+            or not elementInfo.valueHasChanged[name + option]:
+                # skip unchanged values
+                continue
+
+            if callable(getattr(element, value)):
+                optionValue = reprFunc(getattr(element, value)())
+            else:
+                optionValue = reprFunc(getattr(element, value))
+
+            if option in self.specialPropMapping.keys():
+                optionValue = self.specialPropMapping[option][optionValue]
+            elementJson[name + option] = optionValue
+
+    def __fillSubOptionMappings(self, name, reprFunc, subOptionKey, elementInfo, elementJson):
+        for option, value in self.subOptionMapping[subOptionKey].items():
+            if name + option not in elementInfo.valueHasChanged \
+            or not elementInfo.valueHasChanged[name + option]:
+                # skip unchanged values
+                continue
+            optionValue = reprFunc(element[value])
+            elementJson[name + option] = optionValue
+
+    def __hasWidgetValueChanged(self, element, elementInfo, widgetDefinition, name, value):
+        if widgetDefinition.internalName in self.explIncludeOptions:
+            return True
+
+        if hasattr(element, "options"):
+            # we can check from the elements options
+            for option in element.options():
+
+                if option[DGG._OPT_DEFAULT] == widgetDefinition.internalName \
+                and option[DGG._OPT_VALUE] == value:
+                    return False
+
+                fullComponentName = name + option[DGG._OPT_DEFAULT]
+                notInValueHasChanged = (
+                    fullComponentName not in elementInfo.valueHasChanged \
+                    or not elementInfo.valueHasChanged[fullComponentName])
+
+                if option[DGG._OPT_DEFAULT] == widgetDefinition.internalName \
+                and notInValueHasChanged:
+                    return False
+        else:
+            # we need to create a new element and compare that
+            newWidget = type(element)()
+            fullComponentName = name + widgetDefinition.internalName
+            if fullComponentName in elementInfo.valueHasChanged \
+            and elementInfo.valueHasChanged[fullComponentName]:
+                return True
+
+            try:
+                if value == self.__getOriginalWidgetDefinitionValue(widgetDefinition, newWidget):
+                    return False
+            except Exception:
+                # this may happen if something hasn't
+                # been set in the vanilla widget. E.g.
+                # the geom of an OnscreenGeom. So there
+                # must have been changes in the widget
+                pass
+        return True
+
+    def __writeOptions(self, elementInfo, element, name, reprFunc, elementJson):
+        for option in element.options():
+            optionFullName = name + option[DGG._OPT_DEFAULT]
+
+            if option[DGG._OPT_DEFAULT] in self.ignoreOptions \
+            or optionFullName not in elementInfo.valueHasChanged \
+            or not elementInfo.valueHasChanged[optionFullName] \
+            or (elementInfo.type in self.ignoreMapping \
+            and optionFullName in self.ignoreMapping[elementInfo.type]) \
+            or self.__shouldIgnoreOption(option):
+                # skip unchanged and ignored values and options
+                continue
+
+            try:
+                element_value = self.__getValueOfElement(element, option)
+
+                if option[DGG._OPT_VALUE] != element[option[DGG._OPT_DEFAULT]] \
+                and option[DGG._OPT_DEFAULT] in self.specialPropMapping:
+                    element_value = self.specialPropMapping[option[DGG._OPT_DEFAULT]][reprFunc(element_value)]
+
+                if not (isinstance(element_value, type) \
+                and reprFunc(element_value).startswith("<class")):
+                    elementJson[optionFullName] = reprFunc(element_value)
+                else:
+                    elementJson[optionFullName] = reprFunc(element_value)
+            except Exception:
+                logging.exception(f"Problem while writing option {optionFullName}")
+                self.hasError = True
+            except IgnoreException:
+                continue
+
+    def __getOriginalWidgetDefinitionValue(self, widgetDefinition, newWidget):
+        if widgetDefinition.getFunctionName is not None \
+        and type(widgetDefinition.getFunctionName) == str:
+            origWidgetValue = getattr(
+                newWidget,
+                widgetDefinition.getFunctionName)()
+        elif widgetDefinition.getFunctionName is not None:
+            return widgetDefinition.getFunctionName()
+
+        return getattr(
+            newWidget,
+            widgetDefinition.internalName)
+
+    def __shouldIgnoreOption(self, option):
+        for ignoreOption in self.ignoreOptionsWithSub:
+            if option[DGG._OPT_DEFAULT] in self.keepExactIgnoreOptionsWithSub:
+                return False
+            if option[DGG._OPT_DEFAULT].startswith(ignoreOption):
+                return True
+        return False
+
+    def __getValueOfElement(self, element, option):
+        funcName = "get{}{}".format(option[DGG._OPT_DEFAULT][0].upper(), option[DGG._OPT_DEFAULT][1:])
+        propName = "{}".format(option[DGG._OPT_DEFAULT])
+        # Savety check. I currently only know of this function that isn't set by default
+        if hasattr(element, funcName) \
+        and not option[DGG._OPT_DEFAULT] in self.ignoreFunction:
+            if funcName == "getColor" \
+            and not element.hasColor():
+                raise IgnoreException()
+            return getattr(element, funcName)()
+        elif hasattr(element, propName):
+            if callable(getattr(element, propName)):
+                return getattr(element, propName)()
+            else:
+                return getattr(element, propName)
+        elif option[DGG._OPT_DEFAULT] in self.functionMapping["base"]:
+            funcName = self.functionMapping["base"][option[DGG._OPT_DEFAULT]]
+            if hasattr(element, funcName):
+                return getattr(element, funcName)()
+            else:
+                logging.warning("Can't call: {}".format(option[DGG._OPT_DEFAULT]))
+                raise Exception("Can't call function")
+
+        try:
+            return element[option[DGG._OPT_DEFAULT]]
+        except Exception as e:
+            logging.warning("Can't write: {}".format(option[DGG._OPT_DEFAULT]))
+            raise
+
+    class IgnoreException(Exception):
+        pass

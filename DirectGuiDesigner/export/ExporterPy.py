@@ -27,6 +27,8 @@ class ExporterPy:
     # list of control names staritng with the following will always be included
     explIncludeControls = ["itemFrame"]
 
+    tabWidth = 4
+
     def __init__(
             self,
             fileName,
@@ -101,26 +103,21 @@ from panda3d.core import (
     LVecBase3f,
     LVecBase4f,
     TextNode
-)"""
-
-        self.content += """
+)
 
 class GUI:
     def __init__(self, rootParent=None):
         """
 
-        #self.__createStructuredElements("root", visualEditor.getCanvas())
-
         for name, elementInfo in self.jsonElements.items():
             self.content += self.__createElement(name, elementInfo)
-
 
         self.content += "\n"
         for line in self.postSetupCalling:
             self.content += line + "\n"
 
         for radioButton, others in self.radiobuttonDict.items():
-            self.content += " "*8 + f"{radioButton}.setOthers(["
+            self.content += " " * tabWidth * 2 + f"{radioButton}.setOthers(["
             for other in others:
                 self.content += other + ","
             self.content += "])\n"
@@ -151,7 +148,7 @@ class GUI:
                                     else:
                                         extraArgs += f", {arg}"
 
-                        self.content += " "*8 + f"self.{name}.{widget.addItemFunction}({element}{extraArgs})\n"
+                        self.content += " " * tabWidth * 2 + f"self.{name}.{widget.addItemFunction}({element}{extraArgs})\n"
 
             if elementInfo["parent"] == "root" or elementInfo["parent"].startswith("a2d"):
                 topLevelItems.append(name)
@@ -159,19 +156,19 @@ class GUI:
         # Create helper functions for toplevel elements
         if len(topLevelItems) > 0:
             self.content += "\n"
-            self.content += " "*4 + "def show(self):\n"
+            self.content += " " * tabWidth + "def show(self):\n"
             for name in topLevelItems:
-                self.content += " "*8 + f"self.{name}.show()\n"
+                self.content += " " * tabWidth * 2 + f"self.{name}.show()\n"
 
             self.content += "\n"
-            self.content += " "*4 + "def hide(self):\n"
+            self.content += " " * tabWidth + "def hide(self):\n"
             for name in topLevelItems:
-                self.content += " "*8 + f"self.{name}.hide()\n"
+                self.content += " " * tabWidth * 2 + f"self.{name}.hide()\n"
 
             self.content += "\n"
-            self.content += " "*4 + "def destroy(self):\n"
+            self.content += " " * tabWidth + "def destroy(self):\n"
             for name in topLevelItems:
-                self.content += " "*8 + f"self.{name}.destroy()\n"
+                self.content += " " * tabWidth * 2 + f"self.{name}.destroy()\n"
 
         # Make script executable if desired
         if ConfigVariableBool("create-executable-scripts", False).getValue():
@@ -223,11 +220,14 @@ app = ShowBase()\n"""
                 v = f"'{v}'"
 
             definition = PropertyHelper.getDefinition(elementInfo, optionName)
-            if definition.loaderFunc is not None:
+            # we don't want to pass None values to loader functions, just store None itself
+            # if this is not intended for some loaders, we need to enhance the definition
+            # to make sure we know when to use the loader func and when to store None.
+            if definition.loaderFunc is not None and v is not None:
                 if isinstance(definition.loaderFunc, str):
                     v = definition.loaderFunc.replace("value", f"{v}")
 
-            extraOptions += " "*12 + f"{optionName}={v},\n"
+            extraOptions += " " * tabWidth * 3 + f"{optionName}={v},\n"
         elementCode = """
         self.{} = {}(
 {}{}        )\n""".format(
@@ -237,16 +237,16 @@ app = ShowBase()\n"""
             extraOptions,
             )
         if elementInfo["element"]["transparency"] != "M_none":
-            elementCode += " "*8 + f"self.{name}.setTransparency({elementInfo['element']['transparency']})\n"
+            elementCode += " " * tabWidth * 2 + f"self.{name}.setTransparency({elementInfo['element']['transparency']})\n"
 
         if elementInfo["type"] == "DirectScrolledListItem":
-            self.postSetupCalling.append(" "*8 + f"self.{elementInfo['parent']}.addItem(self.{name})")
+            self.postSetupCalling.append(" " * tabWidth * 2 + f"self.{elementInfo['parent']}.addItem(self.{name})")
 
         return elementCode
 
     def __writeElementOptions(self, name, elementInfo):
         elementOptions = ""
-        indent = " "*12
+        indent = " " * tabWidth * 3
 
         for optionKey, optionValue in elementInfo["element"].items():
             if optionKey.endswith("transparency"):
@@ -263,7 +263,6 @@ app = ShowBase()\n"""
                 for other in optionValue:
                     others.append("self.{}".format(other))
                 self.radiobuttonDict["self.{}".format(name)] = others
-                continue
 
         if elementInfo["parent"] != "root":
             self.canvasParents = [

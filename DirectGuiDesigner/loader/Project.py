@@ -39,7 +39,7 @@ class ProjectLoader(DirectObject):
     ignoreMap = []#"state"]
     ignoreComponentSplit = ["text", "image"]
 
-    def __init__(self, fileName, visualEditorInfo, elementHandler, customWidgetHandler, getEditorPlacer, allWidgetDefinitions, exceptionLoading=False, tooltip=None, newProjectCall=None):
+    def __init__(self, fileName, visualEditorInfo, elementHandler, customWidgetHandler, getEditorPlacer, allWidgetDefinitions, exceptionLoading=False, tooltip=None, newProjectCall=None, directLoading=False):
         self.newProjectCall = newProjectCall
         self.extraOptions = ["borderWidth", "frameColor", "initialText", "clipSize"]
         self.parentMap = {}
@@ -52,7 +52,9 @@ class ProjectLoader(DirectObject):
         self.getEditorPlacer = getEditorPlacer
         self.hasErrors = False
         self.allWidgetDefinitions = allWidgetDefinitions
-        if exceptionLoading:
+        if directLoading:
+            self.__executeLoad(fileName)
+        elif exceptionLoading:
             self.excLoad()
         else:
             self.browser = DirectFolderBrowser(
@@ -149,102 +151,118 @@ class ProjectLoader(DirectObject):
 
         # check if we can create postponed elements
         for elementName, elementInfo in self.postponedElements.copy().items():
-            if elementName in self.createdParents: continue
+            if elementName in self.createdParents:
+                continue
             if elementInfo["parent"] in self.createdParents:
                 self.__createElement(elementName, elementInfo)
 
     def __createControl(self, jsonElementName, jsonElementInfo):
         """Create a specific gui element."""
-        funcName = "create{}".format(jsonElementInfo["type"])
-        if hasattr(self.elementHandler, funcName):
-            parentName = jsonElementInfo["parent"]
-            parent = None
-            if parentName in self.parentMap.keys():
-                parent = self.elementDict[self.parentMap[parentName]]
-            widget = self.customWidgetHandler.getWidget(jsonElementInfo["type"])
-            if funcName == "createDirectEntryScroll":
-                elementInfo = getattr(self.elementHandler, funcName)(parent.element if parent is not None else None, False)
-            elif widget is not None:
-                # Custom widget add
-                elementInfo = getattr(self.elementHandler, funcName)(widget, parent.element if parent is not None else None)
-            else:
-                elementInfo = getattr(self.elementHandler, funcName)(parent.element if parent is not None else None)
+        funcName = f"create{jsonElementInfo['type']}"
+        if not hasattr(self.elementHandler, funcName):
+            logging.error("Couldn not create element, unknown function {}".format(funcName))
+            return
 
-            if elementInfo is None: return
+        parentName = jsonElementInfo["parent"]
+        parent = None
+        if parentName in self.parentMap.keys():
+            parent = self.elementDict[self.parentMap[parentName]]
+        elif parentName in self.canvasParents:
+            parent = self.getEditorPlacer(parentName)
 
-            if parentName in self.canvasParents:
-                parent = self.getEditorPlacer(parentName)
-                elementInfo.element.reparentTo(parent)
+        elementInfo = self.__createElementInfo(jsonElementInfo, funcName, parent)
+        if elementInfo is None:
+            return
 
-            # load the extra definitions of the element info
-            elementInfo.command = jsonElementInfo["command"]
-            elementInfo.extraArgs = jsonElementInfo["extraArgs"]
-            elementInfo.extraOptions = jsonElementInfo["extraOptions"]
-            elementInfo.addItemExtraArgs = jsonElementInfo["addItemExtraArgs"]
-            elementInfo.addItemNode = jsonElementInfo["addItemNode"]
-            elementInfo.name = jsonElementName
-            if "transparency" in jsonElementInfo:
-                elementInfo.element.setTransparency(eval(jsonElementInfo["transparency"]))
+        # load the extra definitions of the element info
+        elementInfo.command = jsonElementInfo["command"]
+        elementInfo.extraArgs = jsonElementInfo["extraArgs"]
+        elementInfo.extraOptions = jsonElementInfo["extraOptions"]
+        elementInfo.addItemExtraArgs = jsonElementInfo["addItemExtraArgs"]
+        elementInfo.addItemNode = jsonElementInfo["addItemNode"]
+        elementInfo.name = jsonElementName
+        if "transparency" in jsonElementInfo:
+            elementInfo.element.setTransparency(eval(jsonElementInfo["transparency"]))
 
-            if type(elementInfo) is tuple:
-                if parent is not None and "DirectScrolledList" == parent.type:
-                    parent.element.addItem(elementInfo[0].element)
-                elif parent is not None and "DirectEntryScroll" == parent.type:
-                    parent.element.setEntry(elementInfo[0].element)
-                    parent.extraOptions["entry"] = "self." + elementInfo[0].name
-                parentWidget = self.customWidgetHandler.getWidget(parent.type if parent is not None else "")
-                if parentWidget is not None:
-                    if parentWidget.addItemFunction is not None:
-                        # call custom widget add function
-                        getattr(parent.element, parentWidget.addItemFunction)(elementInfo[0].element)
+        if type(elementInfo) is tuple:
+            self.__updateElementInfoTuple(elementInfo, parent, jsonElementInfo)
+        elif type(parent) == type(NodePath()):
+            self.__updateElementInfoNodePath(elementInfo, parent, jsonElementInfo)
+        else:
+            self.__updateElementInfoOtherType(elementInfo, parent, jsonElementInfo)
+        base.messenger.send("refreshStructureTree")
 
-                for entry in elementInfo:
-                    entry.parent = parent
-                    # TODO: Check how this works! ESP. Saving TOO
-                    self.__setProperties(entry, jsonElementInfo)
-                    self.elementDict[entry.element.guiId] = entry
-                    self.parentMap[jsonElementName] = entry.element.guiId
-            elif type(parent) == type(NodePath()):
-                elementInfo.parent = parent
-                self.__setProperties(elementInfo, jsonElementInfo)
-                if elementInfo.type == "DirectScrolledFrame":
-                    elementInfo.element.setScrollBarWidth()
-                self.elementDict[elementInfo.element.guiId] = elementInfo
-                self.parentMap[jsonElementName] = elementInfo.element.guiId
-            else:
-                elementInfo.parent = parent
-                if parent is not None and "DirectScrolledList" == parent.type:
-                    parent.element.addItem(elementInfo.element)
-                elif parent is not None and "DirectEntryScroll" == parent.type:
-                    parent.element.setEntry(elementInfo.element)
-                    parent.extraOptions["entry"] = "self." + elementInfo.name
-                elif parent is not None and "DirectScrolledFrame" == parent.type:
-                    elementInfo.element.reparentTo(parent.element.canvas)
-                parentWidget = self.customWidgetHandler.getWidget(parent.type if parent is not None else "")
-                if parentWidget is not None:
-                    self.__handleWidgetAddItemFunc(elementInfo, parent, parentWidget)
+    def __updateElementInfoTuple(self, elementInfo, parent, jsonElementInfo):
+        if parent is not None and "DirectScrolledList" == parent.type:
+            parent.element.addItem(elementInfo[0].element)
+        elif parent is not None and "DirectEntryScroll" == parent.type:
+            parent.element.setEntry(elementInfo[0].element)
+            parent.extraOptions["entry"] = "self." + elementInfo[0].name
+        parentWidget = self.customWidgetHandler.getWidget(parent.type if parent is not None else "")
+        if parentWidget is not None \
+        and parentWidget.addItemFunction is not None:
+            # call custom widget add function
+            getattr(parent.element, parentWidget.addItemFunction)(elementInfo[0].element)
 
-                self.__setProperties(elementInfo, jsonElementInfo)
-                if elementInfo.type == "DirectScrolledFrame":
-                    elementInfo.element.setScrollBarWidth()
-                self.elementDict[elementInfo.element.guiId] = elementInfo
-                self.parentMap[jsonElementName] = elementInfo.element.guiId
-            base.messenger.send("refreshStructureTree")
+        for entry in elementInfo:
+            entry.parent = parent
+            self.__setProperties(entry, jsonElementInfo)
+            self.elementDict[entry.element.guiId] = entry
+            self.parentMap[jsonElementName] = entry.element.guiId
+
+    def __updateElementInfoNodePath(self, elementInfo, parent, jsonElementInfo):
+        elementInfo.parent = parent
+        self.__setProperties(elementInfo, jsonElementInfo)
+        if elementInfo.type == "DirectScrolledFrame":
+            elementInfo.element.setScrollBarWidth()
+        self.elementDict[elementInfo.element.guiId] = elementInfo
+        self.parentMap[jsonElementName] = elementInfo.element.guiId
+
+    def __updateElementInfoOtherType(self, elementInfo, parent, jsonElementInfo):
+        elementInfo.parent = parent
+        if parent is not None and "DirectScrolledList" == parent.type:
+            parent.element.addItem(elementInfo.element)
+        elif parent is not None and "DirectEntryScroll" == parent.type:
+            parent.element.setEntry(elementInfo.element)
+            parent.extraOptions["entry"] = "self." + elementInfo.name
+        elif parent is not None and "DirectScrolledFrame" == parent.type:
+            elementInfo.element.reparentTo(parent.element.canvas)
+        parentWidget = self.customWidgetHandler.getWidget(parent.type if parent is not None else "")
+        if parentWidget is not None:
+            self.__handleWidgetAddItemFunc(elementInfo, parent, parentWidget)
+
+        self.__setProperties(elementInfo, jsonElementInfo)
+        if elementInfo.type == "DirectScrolledFrame":
+            elementInfo.element.setScrollBarWidth()
+        self.elementDict[elementInfo.element.guiId] = elementInfo
+        self.parentMap[jsonElementName] = elementInfo.element.guiId
+
+    def __createElementInfo(self, jsonElementInfo, funcName, parent):
+        widget = self.customWidgetHandler.getWidget(jsonElementInfo["type"])
+        if funcName == "createDirectEntryScroll":
+            elementInfo = getattr(self.elementHandler, funcName)(parent.element if parent is not None else None, False)
+        elif widget is not None:
+            # Custom widget add
+            elementInfo = getattr(self.elementHandler, funcName)(widget, parent.element if parent is not None else None)
+        else:
+            elementInfo = getattr(self.elementHandler, funcName)(parent.element if parent is not None else None)
 
     def __handleWidgetAddItemFunc(self, elementInfo, parent, parentWidget):
         if isinstance(parentWidget.addItemExtraArgs, dict):  # get the extra args from the .gui file
-            index = 0
-            for value, parentArg in zip(elementInfo.addItemExtraArgs, parentWidget.addItemExtraArgs.values()):
+            for index, (value, parentArg) in enumerate(zip(elementInfo.addItemExtraArgs, parentWidget.addItemExtraArgs.values())):
                 valueType = parentArg["type"]
-                if valueType == "element":  # replace the element name for the element itself
-                    for elInfo in self.elementDict.values():
-                        if elInfo.name == value:
-                            elementInfo.addItemExtraArgs[index] = elInfo.element
-                            break
-                    else:  # if the element was not found
-                        self.doMethodLater(0.2, self.__handleWidgetAddItemFunc, "__handleWidgetAddItem", [elementInfo, parent, parentWidget])
-                        return
-                index += 1
+                if valueType != "element":
+                    continue
+                # replace the element name for the element itself
+                for elInfo in self.elementDict.values():
+                    if elInfo.name != value:
+                        continue
+                    elementInfo.addItemExtraArgs[index] = elInfo.element
+                    break
+                else:
+                    # if the element was not found
+                    self.doMethodLater(0.2, self.__handleWidgetAddItemFunc, "__handleWidgetAddItem", [elementInfo, parent, parentWidget])
+                    return
         # call custom widget add function
         parentWidget.callAddItemFunc(parent, elementInfo)
 
@@ -268,60 +286,55 @@ class ProjectLoader(DirectObject):
 
     def __setProperty(self, elementInfo, name, value):
         """Set a specific property of the element in 'elementInfo'."""
-        if elementInfo.type in self.allWidgetDefinitions:
-            element = elementInfo.element
-            subElementInfo = None
-            optionName = name
-            if "_" in name:
-                parts = name.split("_")
-                componentName = "_".join(parts[:-1])
-                optionName = parts[-1]
+        if elementInfo.type not in self.allWidgetDefinitions:
+            logging.error("Couldn't load property {}. No Definition available.".format(name))
+            return
 
-                if elementInfo.element.hascomponent(componentName):
-                    element = elementInfo.element.component(componentName)
+        element = elementInfo.element
+        subElementInfo = None
+        optionName = name
+        if "_" in name:
+            parts = name.split("_")
+            componentName = "_".join(parts[:-1])
+            optionName = parts[-1]
 
-                    subElementInfo = ElementInfo(
-                        element,
-                        type(element).__name__,
-                        elementInfo.name,
-                        elementInfo.parent,
-                        elementInfo.extraOptions,
-                        elementInfo.createAfter,
-                        elementInfo.customImportPath,
-                        elementInfo.addItemExtraArgs,
-                        elementInfo.addItemNode
-                    )
+            if elementInfo.element.hascomponent(componentName):
+                element = elementInfo.element.component(componentName)
 
-                # This wouldn't have worked but we shouldn't get in there anyway
-                #elif elementInfo.element.hascomponent(componentName + "0"):
-                #    # we do have stated component here
-                #    for i in range(elementInfo.element['numStates']):
-                #        element = elementInfo.element.component(componentName + f"{i}")
+                subElementInfo = ElementInfo(
+                    element,
+                    type(element).__name__,
+                    elementInfo.name,
+                    elementInfo.parent,
+                    elementInfo.extraOptions,
+                    elementInfo.createAfter,
+                    elementInfo.customImportPath,
+                    elementInfo.addItemExtraArgs,
+                    elementInfo.addItemNode
+                )
 
-                #        subElementInfo = ElementInfo(
-                #            element,
-                #            type(element).__name__,
-                #            elementInfo.name,
-                #            elementInfo.parent,
-                #            elementInfo.extraOptions,
-                #            elementInfo.createAfter,
-                #            elementInfo.customImportPath)
+        ei = subElementInfo if subElementInfo is not None else elementInfo
+        wdList = self.allWidgetDefinitions[ei.type]
 
-            ei = subElementInfo if subElementInfo is not None else elementInfo
-            wdList = self.allWidgetDefinitions[ei.type]
-            for wd in wdList:
-                if wd.internalName == optionName:
-                    if isinstance(value, str):
-                        PropertyHelper.setValue(wd, ei, eval(value), value)
-                    else:
-                        PropertyHelper.setValue(wd, ei, eval(value))
-                    # don't need to continue, we only have one value to set
-                    break
-            if subElementInfo is not None:
-                # update the changed dictionary
-                if len(subElementInfo.valueHasChanged.keys()) > 0:
-                    key = next(iter(subElementInfo.valueHasChanged))
-                    changed = subElementInfo.valueHasChanged[key]
-                    elementInfo.valueHasChanged[name] = changed
+        try:
+            widgetDef = next(filter(
+                lambda wd: wd.internalName == optionName,
+                wdList))
+        except:
+            logging.exception("Widget definition for {} not found! Unable to set value.".format(wd.internalName))
+            return
+
+        if isinstance(value, str):
+            PropertyHelper.setValue(widgetDef, ei, eval(value), value)
         else:
-            logging.error(f"Couldn't load property {name}. No Definition available.")
+            PropertyHelper.setValue(widgetDef, ei, eval(value))
+
+        if subElementInfo is None \
+        or len(subElementInfo.valueHasChanged.keys()) <= 0:
+            # no sub elements to update
+            return
+
+        # update the changed dictionary
+        key = next(iter(subElementInfo.valueHasChanged))
+        changed = subElementInfo.valueHasChanged[key]
+        elementInfo.valueHasChanged[name] = changed
